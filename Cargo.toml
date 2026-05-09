@@ -1,0 +1,36 @@
+[package]
+name = "macagent"
+version = "0.1.0"
+edition = "2021"
+description = "macagent: OS-level AI assistant daemon for macOS"
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+reqwest = { version = "0.12", features = ["json"] }
+nix = "0.28"
+tracing = "0.1"
+
+
+futures = "0.3"
+libc = "0.2"
+tokio = { version = "1", features = ["full"] }
+thiserror = "1"
+plist="1"
+# New additions for the production IPC layer:
+ 
+ 
+# Used by the listener to wait for in-flight handlers to drain on shutdown.
+# Lighter weight than rolling your own JoinSet wrangler and gives us a
+# clean tracker.wait() with timeout pattern.
+tokio-util = { version = "0.7", features = ["rt"] }
+ 
+# Already in your stack but make sure these features are enabled:
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+ 
+async-trait = "0.1"
+coreaudio-sys = "0.2"
+chrono = { version = "0.4", features = ["serde"] }
+toml = "0.8"
+dirs = "5"
+quick-xml = "0.36"

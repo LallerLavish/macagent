@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.macagent</string>
+    
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/local/bin/macagent</string>
+    </array>
+    
+    <key>KeepAlive</key>
+    <true/>
+    
+    <key>RunAtLoad</key>
+    <true/>
+    
+    <!-- Security: User-scoped logs. Replace YOUR_USERNAME via install.sh -->
+    <key>StandardErrorPath</key>
+    <string>/Users/YOUR_USERNAME/Library/Logs/macagent/macagent.err</string>
+    
+    <key>StandardOutPath</key>
+    <string>/Users/YOUR_USERNAME/Library/Logs/macagent/macagent.out</string>
+</dict>
+</plist>
