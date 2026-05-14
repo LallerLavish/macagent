@@ -1,12 +1,13 @@
-//! Persists per-repo git baseline at end of session.
+//! Persists per-repo, per-branch git baseline at end of session.
 //!
 //! Saved on `leave work mode`. Read on `switch to work mode` to compute
-//! "what changed since last session." Lives at:
+//! "what changed since last session." Each entry is keyed by (repo_id, branch)
+//! so switching branches preserves prior state. Lives at:
 //! ~/Library/Application Support/macagent/state/git_baseline.toml
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use tokio::fs;
 use tracing::debug;
 
@@ -18,17 +19,24 @@ const STATE_SUBDIR: &str = "macagent/state";
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GitBaseline {
     pub saved_at: DateTime<Utc>,
-    pub repos: Vec<RepoBaseline>,
+    pub entries: Vec<RepoBaseline>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RepoBaseline {
-    pub path: String,
-    pub head: String,
+    /// Stable identifier: SHA of the repo's first commit.
+    /// Survives directory moves and renames.
+    pub repo_id: String,
+    /// Last-known filesystem path. Updated on every write.
+    /// For display/debug only — never use as a lookup key.
+    pub repo_path: String,
+    /// Branch name at save time. Detached HEAD entries are never written.
     pub branch: String,
+    /// HEAD commit SHA at save time.
+    pub head: String,
     /// Working-tree diff at save time, possibly truncated.
     pub diff_at_save: String,
-    /// Last commit message at save time.
+    /// Last commit subject at save time.
     pub last_commit: String,
 }
 
@@ -46,7 +54,7 @@ pub async fn write(baseline: &GitBaseline) -> Result<(), ModeError> {
     let content = toml::to_string_pretty(baseline)?;
     fs::write(&tmp, content).await.map_err(|e| ModeError::io(&tmp, e))?;
     fs::rename(&tmp, &path).await.map_err(|e| ModeError::io(&path, e))?;
-    debug!(?path, repos = baseline.repos.len(), "git baseline written");
+    debug!(?path, entries = baseline.entries.len(), "git baseline written");
     Ok(())
 }
 
@@ -71,8 +79,26 @@ pub async fn delete() -> Result<(), ModeError> {
     }
 }
 
-/// Look up a specific repo's baseline by path. Returns None if not in baseline.
-pub fn find_repo<'a>(baseline: &'a GitBaseline, path: &Path) -> Option<&'a RepoBaseline> {
-    let p = path.to_string_lossy();
-    baseline.repos.iter().find(|r| r.path == p)
+/// Look up a specific repo's baseline by (repo_id, branch).
+/// Returns None if no entry exists for that combination.
+pub fn find_entry<'a>(
+    baseline: &'a GitBaseline,
+    repo_id: &str,
+    branch: &str,
+) -> Option<&'a RepoBaseline> {
+    baseline.entries.iter()
+        .find(|e| e.repo_id == repo_id && e.branch == branch)
+}
+
+/// Upsert an entry by (repo_id, branch). Replaces existing entry if one
+/// exists with the same key, otherwise appends. Also updates `repo_path`
+/// on existing entries so it reflects the latest known location.
+pub fn upsert_entry(baseline: &mut GitBaseline, entry: RepoBaseline) {
+    if let Some(existing) = baseline.entries.iter_mut()
+        .find(|e| e.repo_id == entry.repo_id && e.branch == entry.branch)
+    {
+        *existing = entry;
+    } else {
+        baseline.entries.push(entry);
+    }
 }

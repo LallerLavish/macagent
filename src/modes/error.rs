@@ -29,6 +29,9 @@ pub enum ModeError {
     #[error("toml serialize error: {0}")]
     TomlSerialize(#[from] toml::ser::Error),
 
+    #[error("db error: {0}")]
+    Db(#[from] crate::modes::summary::db::DbError),
+
     #[error("app capture failed: {0}")]
     Capture(String),
 

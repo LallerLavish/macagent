@@ -7,6 +7,7 @@ pub mod restore;
 pub mod snapshot;
 pub mod storage;
 pub mod system_state;
+pub mod summary;
 
 use chrono::Utc;
 use std::collections::{HashMap, HashSet};
@@ -187,6 +188,13 @@ where
     // Apply system state from mode
     let target_system = mode.system.to_state();
     let system_applied = system_state::apply_system(caps, &target_system).await;
+    let mode_name_for_summary = name.to_string();
+    tokio::spawn(async move {
+        match summary::generate_and_deliver(&mode_name_for_summary).await {
+            Ok(path) => info!(?path, "summary delivered"),
+            Err(e) => warn!(error = %e, "summary generation failed"),
+        }
+    });
 
     info!(
         mode = %name,

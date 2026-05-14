@@ -12,12 +12,13 @@
 //! Output is concatenated repo sections + metadata header.
 
 use chrono::{DateTime, Utc};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::fmt::Write;
-use tracing::warn;
+use tracing::{info, warn};
 
 use super::baseline::{self, GitBaseline};
-use super::git;
+use super::git::{self, BranchState};
+use super::repos::DetectedRepo;
 
 const DIFF_TRUNCATE_CHARS: usize = 8_000;  // ~2k tokens
 const COMMITS_TRUNCATE_LINES: usize = 30;
@@ -30,6 +31,7 @@ pub struct SummaryInput {
 }
 
 pub struct RepoSection {
+    pub repo_id: String,
     pub path: PathBuf,
     pub branch: String,
     pub baseline: Option<RepoBaselineSummary>,
@@ -46,7 +48,11 @@ pub struct RepoBaselineSummary {
 
 /// Build the full summary input by gathering current git state for each
 /// repo and pairing it with baseline data (if available).
-pub async fn build(repos: &[PathBuf]) -> SummaryInput {
+///
+/// Repos in detached HEAD state are skipped — they have no stable branch
+/// to key baseline lookups against, and summarizing them would mix
+/// unrelated working states.
+pub async fn build(repos: &[DetectedRepo]) -> SummaryInput {
     let baseline_opt = baseline::read().await.unwrap_or_else(|e| {
         warn!(error = %e, "failed to read git baseline, proceeding without it");
         None
@@ -61,8 +67,16 @@ pub async fn build(repos: &[PathBuf]) -> SummaryInput {
     let mut sections = Vec::new();
     for repo in repos {
         match build_repo_section(repo, baseline_opt.as_ref()).await {
-            Ok(s) => sections.push(s),
-            Err(e) => warn!(repo = ?repo, error = %e, "skipping repo in summary"),
+            Ok(Some(s)) => sections.push(s),
+            Ok(None) => {
+                // Detached HEAD or unborn — already logged inside
+            }
+            Err(e) => warn!(
+                repo_id = %repo.repo_id,
+                root = %repo.root.display(),
+                error = %e,
+                "skipping repo in summary"
+            ),
         }
     }
 
@@ -75,27 +89,44 @@ pub async fn build(repos: &[PathBuf]) -> SummaryInput {
 }
 
 async fn build_repo_section(
-    repo: &Path,
+    repo: &DetectedRepo,
     baseline_opt: Option<&GitBaseline>,
-) -> Result<RepoSection, git::GitError> {
-    let branch = git::current_branch(repo).await?;
-    let head = git::current_head(repo).await?;
-    let working_diff = git::working_diff(repo).await.unwrap_or_default();
-    let stat = git::diff_stat(repo).await.unwrap_or_default();
+) -> Result<Option<RepoSection>, git::GitError> {
+    // Branch resolution: detached/unborn → skip entirely.
+    let branch_name = match &repo.branch {
+        BranchState::Named(name) => name.clone(),
+        BranchState::Detached(marker) => {
+            info!(
+                repo_id = %repo.repo_id,
+                root = %repo.root.display(),
+                marker = %marker,
+                "skipping summary section for detached HEAD"
+            );
+            return Ok(None);
+        }
+        BranchState::Unborn => {
+            // Filtered in detect_repos, defensive only
+            return Ok(None);
+        }
+    };
 
-    let baseline_summary = baseline_opt
-        .and_then(|b| baseline::find_repo(b, repo))
-        .map(|r| RepoBaselineSummary {
-            head_short: r.head.chars().take(8).collect(),
-            last_commit: r.last_commit.clone(),
-            diff_at_save: r.diff_at_save.clone(),
-        });
+    let head = git::current_head(&repo.root).await?;
+    let working_diff = git::working_diff(&repo.root).await.unwrap_or_default();
+    let stat = git::diff_stat(&repo.root).await.unwrap_or_default();
 
-    let commits_since = if let Some(b) = baseline_opt
-        .and_then(|b| baseline::find_repo(b, repo))
-    {
+    // Baseline lookup is now by (repo_id, branch) — stable across moves.
+    let baseline_entry = baseline_opt
+        .and_then(|b| baseline::find_entry(b, &repo.repo_id, &branch_name));
+
+    let baseline_summary = baseline_entry.map(|r| RepoBaselineSummary {
+        head_short: r.head.chars().take(8).collect(),
+        last_commit: r.last_commit.clone(),
+        diff_at_save: r.diff_at_save.clone(),
+    });
+
+    let commits_since = if let Some(b) = baseline_entry {
         if b.head != head {
-            git::commits_since(repo, &b.head).await.unwrap_or_default()
+            git::commits_since(&repo.root, &b.head).await.unwrap_or_default()
         } else {
             String::new()
         }
@@ -103,14 +134,15 @@ async fn build_repo_section(
         String::new()
     };
 
-    Ok(RepoSection {
-        path: repo.to_path_buf(),
-        branch,
+    Ok(Some(RepoSection {
+        repo_id: repo.repo_id.clone(),
+        path: repo.root.clone(),
+        branch: branch_name,
         baseline: baseline_summary,
         commits_since_baseline: truncate_lines(&commits_since, COMMITS_TRUNCATE_LINES),
         working_diff_now: git::truncate_diff(&working_diff, DIFF_TRUNCATE_CHARS),
         diff_stat_now: stat,
-    })
+    }))
 }
 
 fn truncate_lines(s: &str, max_lines: usize) -> String {
@@ -155,7 +187,7 @@ pub fn render(input: &SummaryInput) -> String {
                 out.push_str("  Working tree was clean at save.\n");
             }
         } else {
-            out.push_str("\n(No baseline saved — first time summarizing this repo)\n");
+            out.push_str("\n(No baseline saved — first time summarizing this repo/branch)\n");
         }
 
         if !repo.commits_since_baseline.trim().is_empty() {

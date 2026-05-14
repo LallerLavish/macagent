@@ -5,7 +5,7 @@ use std::sync::Arc;
 use tracing::{info, warn};
 
 use crate::engines::capabilities::Capabilities;
-
+use crate::modes::summary;
 use super::capture::apps::running_user_apps;
 use super::error::ModeError;
 use super::handlers::HandlerRegistry;
@@ -86,7 +86,7 @@ pub async fn exit_mode(
     if let Err(e) = crate::modes::summary::save_baseline_for_mode(&snap.mode_name).await {
         warn!(error = %e, "failed to save git baseline");
     }
-    
+
     // 4. Discard snapshot
     snapshot::delete().await?;
 
