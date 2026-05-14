@@ -271,38 +271,78 @@ fn filter_truncate_and_extract(raw: &str) -> (String, Vec<String>) {
 
 /// Pull the `b/PATH` filename from the first line of a diff block.
 /// Returns None if the block doesn't start with a parseable `diff --git`.
+/// Pull the `b/PATH` filename from the first line of a diff block.
+/// Validates the path looks like a real filename — no newlines, quotes,
+/// or diff metadata. Returns None if the block is malformed or the path
+/// fails validation.
 fn extract_file_path(block: &str) -> Option<String> {
     let first_line = block.lines().next()?;
-    // "diff --git a/PATH b/PATH"
+
+    // Must be a real diff header line
+    if !first_line.starts_with("diff --git ") {
+        return None;
+    }
+
     let after_b = first_line.split(" b/").nth(1)?;
     let path = after_b.trim();
+
     if path.is_empty() {
-        None
-    } else {
-        Some(path.to_string())
+        return None;
     }
+
+    // Reject anything that contains characters not valid in a path
+    // or that look like diff metadata leaking through.
+    if path.contains('\n')
+        || path.contains('"')
+        || path.contains('\'')
+        || path.contains("@@")
+        || path.contains('\\')
+    {
+        return None;
+    }
+
+    Some(path.to_string())
 }
 
+/// Split a unified diff into per-file blocks.
+/// Each block starts with `diff --git a/... b/...` at the START of a line
+/// (not inside string literals or other content).
 fn split_diff_by_file(raw: &str) -> Vec<&str> {
     let mut out = Vec::new();
     let mut last_idx = 0;
     let mut first = true;
 
-    for (idx, _) in raw.match_indices("diff --git ") {
+    // Look for "\ndiff --git " — leading newline ensures we only split
+    // at real block boundaries, not on matches inside string literals.
+    // Special-case the very first block which has no leading newline.
+    let leading_check = "\ndiff --git ";
+
+    // First block: only if raw starts with "diff --git "
+    let starts_with_diff = raw.starts_with("diff --git ");
+
+    for (idx, _) in raw.match_indices(leading_check) {
+        // idx points at the '\n'. We want to split AFTER the newline.
+        let split_at = idx + 1;
         if first {
-            last_idx = idx;
+            if starts_with_diff {
+                // The first block starts at 0
+                out.push(&raw[0..split_at]);
+            }
+            last_idx = split_at;
             first = false;
             continue;
         }
-        out.push(&raw[last_idx..idx]);
-        last_idx = idx;
+        out.push(&raw[last_idx..split_at]);
+        last_idx = split_at;
     }
 
     if last_idx < raw.len() {
         out.push(&raw[last_idx..]);
     }
 
-    if out.is_empty() && !raw.is_empty() {
+    // Edge case: diff has only one block (no \ndiff --git found),
+    // starts with "diff --git "
+    if out.is_empty() && starts_with_diff {
         out.push(raw);
     }
 
@@ -335,10 +375,17 @@ mod tests {
     }
 
     #[test]
-    fn filter_status_caps() {
-        let raw = (0..15).map(|i| format!(" M file{}.rs", i)).collect::<Vec<_>>().join("\n");
-        let out = filter_status(&raw);
-        assert!(out.contains("5 more files"));
+    fn extract_rejects_garbage() {
+        // String-literal noise like what showed up in real data
+        assert_eq!(extract_file_path("foo.rs\\n@@ -1 +1 @@"), None);
+        assert_eq!(extract_file_path("PATH\""), None);
+        assert_eq!(extract_file_path("@@ +1 @@"), None);
+    }
+
+    #[test]
+    fn extract_accepts_real_diff_header() {
+        let block = "diff --git a/src/main.rs b/src/main.rs\n@@ -1 +1 @@\n-a\n+b\n";
+        assert_eq!(extract_file_path(block), Some("src/main.rs".to_string()));
     }
 
     #[test]
@@ -347,4 +394,13 @@ mod tests {
         let (_, files) = filter_truncate_and_extract(diff);
         assert_eq!(files, vec!["src/main.rs".to_string(), "README.md".to_string()]);
     }
+
+    #[test]
+    fn filter_status_caps() {
+        let raw = (0..15).map(|i| format!(" M file{}.rs", i)).collect::<Vec<_>>().join("\n");
+        let out = filter_status(&raw);
+        assert!(out.contains("5 more files"));
+    }
+
+    
 }
